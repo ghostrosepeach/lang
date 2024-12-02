@@ -1,7 +1,13 @@
-// compiler.c
+// compiler.cc
 
-#include <stdio.h>
-#include <stdlib.h>
+#include <llvm/IR/BasicBlock.h>
+#include <llvm/IR/Constants.h>
+#include <llvm/IR/DerivedTypes.h>
+#include <llvm/IR/Function.h>
+#include <llvm/IR/IRBuilder.h>
+#include <llvm/IR/LLVMContext.h>
+#include <llvm/IR/Module.h>
+#include <llvm/IR/Type.h>
 
 #define GET (ch = fgetc(input))
 #define NUM (ch & 15)
@@ -10,12 +16,10 @@
 #define NAN32 0x7fc00000U
 #define NAN64 0x7ff800000000000UL
 
-#define END      0x0000000000646e65UL
-#define INCLUDE  0x006564756c636e69UL
 #define AND      0x0000000000646e61UL
 #define BREAK    0x0000006b61657262UL
 #define CASE     0x0000000065736163UL
-#define CLASS    0x0000005353617c63UL
+#define CLASS    0x0000005353616c63UL
 #define CONST    0x00000074736e6f63UL
 #define CONTINUE 0x65756e69746e6f63UL
 #define DO       0x0000000000006f64UL
@@ -24,22 +28,42 @@
 #define FALSE    0x00000065736c6166UL
 #define FOR      0x0000000000726f66UL
 #define FUNC     0x00000000636e7566UL
+#define GLOBAL   0x00006c61626f6c67UL
 #define IF       0x0000000000006669UL
 #define INF      0x0000000000666e69UL
+#define INLINE   0x0000656e696c6e69UL
 #define LET      0x000000000073656cUL
 #define NAN      0x00000000006e616eUL
 #define NEW      0x000000000077656eUL
 #define NOT      0x0000000000736f6eUL
+#define OBJECT   0x000073636570626fUL
+#define OF       0x000000000000666fUL
 #define OR       0x000000000000726fUL
 #define RETURN   0x00006e7275746572UL
 #define STATIC   0x0000636974617473UL
 #define STRUCT   0x0000746375727473UL
 #define SWITCH   0x0000686374697773UL
-#define TRUE     0x0000000065757274UL        
-#define UNION    0x0000006e6f696e75UL      
-#define VIRTUAL  0x006c617574726976UL  
+#define TRUE     0x0000000065757274UL
+#define UNION    0x0000006e6f696e75UL
+#define VIRTUAL  0x006c617574726976UL
 #define VOLATILE 0x656c6974616c6f76UL
-#define WHILE    0x000000656c696877UL      
+#define WHILE    0x000000656c696877UL
+
+/*
+enum Keyword {
+  And = 6581857UL, Break = 461195539042UL, Case = 1702060387UL,
+  Class = 357881179235UL, Const = 500152823651UL, Continue = 7310870969309884259UL,
+  Do = 28516UL, Else = 1702063205UL, Enum = 1836412517UL,
+  False = 435728179558UL, For = 7499622UL, Func = 1668183398UL,
+  Global = 119165519096935UL, If = 26217UL, Inf = 6712937UL,
+  Inline = 111524889521769UL, Let = 7562604UL, Nan = 7233902UL,
+  New = 7824750UL, Not = 7565166UL, Object = 126870740820591UL,
+  Of = 26223UL, Or = 29295UL, Return = 121437875889522UL,
+  Static = 109304575259763UL, Struct = 127970521019507UL, Switch = 114776364119923UL,
+  True = 1702195828UL, Union = 474315583093UL, Virtual = 30506454577473910UL,
+  Volatile = 7308332243887091574UL, While = 435610544247UL
+};
+*/
 
 #define NODBUFSZ 65536
 
@@ -57,7 +81,7 @@
 #define FUNCTBLSZ 8192
 #define VARTBLSZ 8192
 
-#define MAXDIG 15
+// #define MAXDIG 15
 
 enum OperType {
   Add, Sub, Mul, Div, Rem, And, Or, Xor, Set, Eq, Not, NotEq,
@@ -65,23 +89,55 @@ enum OperType {
   Let, Func, FuncName, FuncArgList, FuncArgName, FuncArgType, Poison
 };
 
-struct Node {
-  struct Node* prev;
-  struct Node* next;
-  unsigned int type;
+struct Value {
+  struct Type { };
+  
+  Type type;
   union {
-    struct {
-      unsigned int id;
-      struct Node* next;
-    } func_ext;
+    long intgr;
+    double fltpt;
   };
 };
 
-struct Node node_buf[NODBUFSZ];
-struct Node* func;
-struct Node* curr;
-struct Node* last;
-struct Node* root;
+struct Expr {
+  enum class Prec { Non, Obj, Inc, Mul, Add, Set };
+  enum class Type { Non, Obj, UnOp, BinOp };
+
+  Prec prec;
+  Type type;
+  Expr* parent;
+
+  void add(Expr* expr) {};
+
+  Expr(Prec prec, Type type) : prec(prec), type(type), parent(0) {}
+};
+
+struct ExprBinOp : Expr {
+  Expr *lhe, *rhe;  
+  ExprBinOp(Prec prec) : Expr(prec, Type::BinOp) {}
+};
+
+struct ExprUnOp : Expr {
+  Expr *lhe;
+  ExprUnOp() : Expr(Prec::Inc, Type::UnOp) {}
+};
+
+struct ExprAdd : ExprBinOp { ExprAdd() : ExprBinOp(Prec::Add) {} };
+struct ExprSub : ExprBinOp { ExprSub() : ExprBinOp(Prec::Add) {} };
+struct ExprMul : ExprBinOp { ExprMul() : ExprBinOp(Prec::Mul) {} };
+struct ExprDiv : ExprBinOp { ExprDiv() : ExprBinOp(Prec::Mul) {} };
+
+struct ExprInc : ExprUnOp { ExprInc() : ExprUnOp() {} };
+struct ExprDec : ExprUnOp { ExprDec() : ExprUnOp() {} }; 
+
+struct ExprSet : ExprBinOp { ExprSet() : ExprBinOp(Prec::Set) {} };
+
+struct ExprAddSet : ExprSet { ExprAddSet() : ExprSet() {} }; 
+
+struct ExprNum : Expr {
+  Value val;
+  ExprNum(Value val) : Expr(Prec::Obj, Type::Obj), val(val) {}
+};
 
 struct {
   unsigned int sym;
@@ -118,10 +174,6 @@ int dec_count;
 int prec;
 int oper;
 
-unsigned int find_type () {
-  return 13;
-}
-
 long math_abs(long x) {
   long y = x >> 63;
   return (x ^ y) - y;
@@ -129,16 +181,14 @@ long math_abs(long x) {
 
 int main (int argc, char** argv) {  
   FILE *input, *output;
-  if (argc == 2) {
-    input = fopen(argv[1], "r");
-    if (!input) { return 1; }
-  } else {
-    input = stdin;
-  }
-  output = stdout;
-  
-  START:
-  if (GET == EOF) { return 0; }
+  Expr *last;
+
+  if (!(input = argc == 2 ? fopen(argv[1], "r") : stdin)) return 1;
+  output = stdout;  
+
+  START: GET;
+  CHECK:
+  if (ch == EOF) { return 0; }
   switch (ch) {    
     
     case'\n':
@@ -161,9 +211,6 @@ int main (int argc, char** argv) {
       }
       if (sym_count <= 8) {
         switch (*((unsigned long*)curr_sym)) {
-          case END:
-            return 0;
-          case INCLUDE:
           case AND:
           case BREAK:
           case CASE:
@@ -175,26 +222,10 @@ int main (int argc, char** argv) {
           case ENUM:
           case FALSE:
           case FOR:
-            break;
           case FUNC:
-            if (func == 0) {
-              (func = node_buf + node_count++)->prev = 0;
-            }
-            (last = func)->type = Func;
-            last->func_ext.id = func_count++;
-            break;
           case IF:
           case INF:
-            break;
           case LET:
-            if (func == 0) {
-              printf("error: expected top level expression\n");
-              last = ((last->next = node_buf + node_count++)->prev = last)->next;
-              last->type = Poison;
-            }
-            last = ((last->next = node_buf + node_count++)->prev = last)->next;
-            last->type = Let;
-            break;
           case NAN:
           case NEW:
           case NOT:
@@ -215,23 +246,6 @@ int main (int argc, char** argv) {
         *((unsigned long*)curr_sym) = 0; sym_count = 0;
       }
       SYMBOL:
-      if (last) {
-        switch (last->type) {
-          case Func:
-            func_tbl[last->func_ext.id].sym = (unsigned int)(curr_sym - sym_buf);
-            last->type = FuncName;
-            break;
-          case FuncArgList:
-            var_tbl[var_count++].sym = (unsigned int)(curr_sym - sym_buf);
-            last->type = FuncArgType;
-            break;
-          case FuncArgName:
-            var_tbl[var_count].type = find_type();
-            break;
-          case Let:
-            break;
-        }
-      }
       curr_sym += (sym_count + 15) & ~15; sym_count = 0;
       goto START;
     
@@ -495,7 +509,17 @@ int main (int argc, char** argv) {
           }
       }
       INTEGER:
-      printf("value: %ld\n", int_buf);
+      Value val;
+      val.intgr = int_buf;
+      if (last) {
+        switch(last->type) {
+          case Expr::Type::BinOp:
+            ((ExprBinOp*)last)->rhe = new ExprNum(val);
+            break;
+        }
+      } else {
+        last = new ExprNum(val);
+      }
       goto START;
     
     case '&': oper = And; prec = 5; if (GET == '=') { goto ASSIGNMENT; } goto OPERATOR;
@@ -507,10 +531,10 @@ int main (int argc, char** argv) {
     
     case '?': oper = Qst; if ((ch = fgetc(input)) == '=') { goto ASSIGNMENT; } goto OPERATOR;
      
-    case '+':
-      if (GET == '+') { oper = Inc; goto OPERATOR; }
-      oper = Add; prec = 9;
-      if (ch == '=') { goto ASSIGNMENT; } goto OPERATOR;
+    case '+': GET;
+      if (ch == '+') { last->add(new ExprInc); goto START; } else
+      if (ch == '=') { last->add(new ExprAddSet); goto START; } else
+                     { last->add(new ExprAdd); goto CHECK; }
     
     case '-':
       if (GET == '-') { oper = Dec; goto OPERATOR; }
@@ -530,15 +554,6 @@ int main (int argc, char** argv) {
     case ';': goto START;
     
     case '(':
-      if (last == 0) {
-        goto START;
-      }
-      switch (last->type) {
-        case FuncName:
-          last = ((last->next = node_buf + node_count++)->prev = last)->next;
-          last->type = FuncArgList;
-          break;
-      }
       goto START;
     
     case ')': goto START;
@@ -547,11 +562,8 @@ int main (int argc, char** argv) {
       return 1;
   }
 
-  ASSIGNMENT:
-  
+  ASSIGNMENT:  
   OPERATOR:
-  
-  OBJECT:
     goto START;
 }
 
