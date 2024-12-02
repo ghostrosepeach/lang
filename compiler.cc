@@ -16,6 +16,13 @@
 #define NAN32 0x7fc00000U
 #define NAN64 0x7ff800000000000UL
 
+/*
+  all keywords are in range 2...8 characters long,
+  that lets to effectively compare strings against
+  keywords by interpreting them as 8 byte long integers.
+  the strings must be aligned by atleast 8 byte border.
+*/
+
 #define AND      0x0000000000646e61UL
 #define BREAK    0x0000006b61657262UL
 #define CASE     0x0000000065736163UL
@@ -32,13 +39,14 @@
 #define IF       0x0000000000006669UL
 #define INF      0x0000000000666e69UL
 #define INLINE   0x0000656e696c6e69UL
-#define LET      0x000000000073656cUL
+#define LET      0x000000000074656cUL
 #define NAN      0x00000000006e616eUL
 #define NEW      0x000000000077656eUL
-#define NOT      0x0000000000736f6eUL
-#define OBJECT   0x000073636570626fUL
+#define NOT      0x0000000000746f6eUL
+#define OBJECT   0x000074636570626fUL
 #define OF       0x000000000000666fUL
 #define OR       0x000000000000726fUL
+#define PACKET   0x000074656b636171UL
 #define RETURN   0x00006e7275746572UL
 #define STATIC   0x0000636974617473UL
 #define STRUCT   0x0000746375727473UL
@@ -47,23 +55,9 @@
 #define UNION    0x0000006e6f696e75UL
 #define VIRTUAL  0x006c617574726976UL
 #define VOLATILE 0x656c6974616c6f76UL
+#define WHERE    0x0000006572656877UL
 #define WHILE    0x000000656c696877UL
-
-/*
-enum Keyword {
-  And = 6581857UL, Break = 461195539042UL, Case = 1702060387UL,
-  Class = 357881179235UL, Const = 500152823651UL, Continue = 7310870969309884259UL,
-  Do = 28516UL, Else = 1702063205UL, Enum = 1836412517UL,
-  False = 435728179558UL, For = 7499622UL, Func = 1668183398UL,
-  Global = 119165519096935UL, If = 26217UL, Inf = 6712937UL,
-  Inline = 111524889521769UL, Let = 7562604UL, Nan = 7233902UL,
-  New = 7824750UL, Not = 7565166UL, Object = 126870740820591UL,
-  Of = 26223UL, Or = 29295UL, Return = 121437875889522UL,
-  Static = 109304575259763UL, Struct = 127970521019507UL, Switch = 114776364119923UL,
-  True = 1702195828UL, Union = 474315583093UL, Virtual = 30506454577473910UL,
-  Volatile = 7308332243887091574UL, While = 435610544247UL
-};
-*/
+#define XOR      0x0000000000726f78UL
 
 #define NODBUFSZ 65536
 
@@ -81,14 +75,6 @@ enum Keyword {
 #define FUNCTBLSZ 8192
 #define VARTBLSZ 8192
 
-// #define MAXDIG 15
-
-enum OperType {
-  Add, Sub, Mul, Div, Rem, And, Or, Xor, Set, Eq, Not, NotEq,
-  Lss, LssEq, Grt, GrtEq, AndBrn, OrBrn, Arr, Qst, Addr, Inc, Dec,
-  Let, Func, FuncName, FuncArgList, FuncArgName, FuncArgType, Poison
-};
-
 struct Value {
   struct Type { };
   
@@ -99,8 +85,13 @@ struct Value {
   };
 };
 
+/*
+  Precedence: 0 is undefined, 1 is highest,
+  the higher value the lower precedence
+*/
+
 struct Expr {
-  enum class Prec { Non, Obj, Inc, Mul, Add, Set };
+  enum class Prec { Non, Obj, Inc, Rng, Shl, And, Xor, Or, Mul, Add, Set, Ord, Cmp };
   enum class Type { Non, Obj, UnOp, BinOp };
 
   Prec prec;
@@ -126,13 +117,47 @@ struct ExprAdd : ExprBinOp { ExprAdd() : ExprBinOp(Prec::Add) {} };
 struct ExprSub : ExprBinOp { ExprSub() : ExprBinOp(Prec::Add) {} };
 struct ExprMul : ExprBinOp { ExprMul() : ExprBinOp(Prec::Mul) {} };
 struct ExprDiv : ExprBinOp { ExprDiv() : ExprBinOp(Prec::Mul) {} };
-
+struct ExprRem : ExprBinOp { ExprRem() : ExprBinOp(Prec::Mul) {} };
+struct ExprAnd : ExprBinOp { ExprAnd() : ExprBinOp(Prec::And) {} };
+struct ExprXor : ExprBinOp { ExprXor() : ExprBinOp(Prec::Xor) {} };
+struct ExprOr  : ExprBinOp { ExprOr()  : ExprBinOp(Prec::Or)  {} };
+struct ExprShl : ExprBinOp { ExprShl() : ExprBinOp(Prec::Shl) {} };
+struct ExprShr : ExprBinOp { ExprShr() : ExprBinOp(Prec::Shl) {} };
+ 
 struct ExprInc : ExprUnOp { ExprInc() : ExprUnOp() {} };
-struct ExprDec : ExprUnOp { ExprDec() : ExprUnOp() {} }; 
-
+struct ExprDec : ExprUnOp { ExprDec() : ExprUnOp() {} };
+struct ExprQst : ExprUnOp { ExprQst() : ExprUnOp() {} };
+struct ExprBng : ExprUnOp { ExprBng() : ExprUnOp() {} };
+struct ExprPtr : ExprUnOp { ExprPtr() : ExprUnOp() {} };
+ 
 struct ExprSet : ExprBinOp { ExprSet() : ExprBinOp(Prec::Set) {} };
+struct ExprDef : ExprBinOp { ExprDef() : ExprBinOp(Prec::Set) {} }; 
+struct ExprAddSet : ExprBinOp { ExprAddSet() : ExprBinOp(Prec::Set) {} };
+struct ExprSubSet : ExprBinOp { ExprSubSet() : ExprBinOp(Prec::Set) {} };
+struct ExprMulSet : ExprBinOp { ExprMulSet() : ExprBinOp(Prec::Set) {} };
+struct ExprDivSet : ExprBinOp { ExprDivSet() : ExprBinOp(Prec::Set) {} };
+struct ExprRemSet : ExprBinOp { ExprRemSet() : ExprBinOp(Prec::Set) {} };
+struct ExprAndSet : ExprBinOp { ExprAndSet() : ExprBinOp(Prec::Set) {} };
+struct ExprXorSet : ExprBinOp { ExprXorSet() : ExprBinOp(Prec::Set) {} };
+struct ExprOrSet  : ExprBinOp { ExprOrSet()  : ExprBinOp(Prec::Set) {} };
+struct ExprShlSet : ExprBinOp { ExprShlSet() : ExprBinOp(Prec::Set) {} };
+struct ExprShrSet : ExprBinOp { ExprShrSet() : ExprBinOp(Prec::Set) {} };
 
-struct ExprAddSet : ExprSet { ExprAddSet() : ExprSet() {} }; 
+struct ExprDot : ExprBinOp { ExprDot() : ExprBinOp(Prec::Non) {} };
+struct ExprXrg : ExprBinOp { ExprXrg() : ExprBinOp(Prec::Rng) {} };
+struct ExprRg  : ExprBinOp { ExprRg()  : ExprBinOp(Prec::Rng) {} };
+ 
+
+struct ExprEq : ExprBinOp { ExprEq() : ExprBinOp(Prec::Cmp) {} };
+struct ExprNe : ExprBinOp { ExprNe() : ExprBinOp(Prec::Cmp) {} }; 
+
+struct ExprLt : ExprBinOp { ExprLt() : ExprBinOp(Prec::Ord) {} };
+struct ExprLe : ExprBinOp { ExprLe() : ExprBinOp(Prec::Ord) {} }; 
+struct ExprGt : ExprBinOp { ExprGt() : ExprBinOp(Prec::Ord) {} };
+struct ExprGe : ExprBinOp { ExprGe() : ExprBinOp(Prec::Ord) {} };
+
+struct ExprCol : ExprBinOp { ExprCol() : ExprBinOp(Prec::Non) {} };
+struct ExprArr : ExprBinOp { ExprArr() : ExprBinOp(Prec::Non) {} };
 
 struct ExprNum : Expr {
   Value val;
@@ -211,25 +236,30 @@ int main (int argc, char** argv) {
       }
       if (sym_count <= 8) {
         switch (*((unsigned long*)curr_sym)) {
-          case AND:
-          case BREAK:
-          case CASE:
-          case CLASS:
-          case CONST:
-          case CONTINUE:
-          case DO:
-          case ELSE:
-          case ENUM:
-          case FALSE:
-          case FOR:
+          case AND:         
+          case BREAK:       
+          case CASE:        
+          case CLASS:       
+          case CONST:       
+          case CONTINUE:    
+          case DO:    
+          case ELSE:  
+          case ENUM:  
+          case FALSE: 
+          case FOR:   
           case FUNC:
-          case IF:
+          case GLOBAL:
+          case IF:    
           case INF:
-          case LET:
-          case NAN:
-          case NEW:
+          case INLINE:
+          case LET:   
+          case NAN:   
+          case NEW:   
           case NOT:
+          case OBJECT:
+          case OF:
           case OR:
+          case PACKET:
           case RETURN:
           case STATIC:
           case STRUCT:
@@ -238,7 +268,9 @@ int main (int argc, char** argv) {
           case UNION:
           case VIRTUAL:
           case VOLATILE:
+          case WHERE:
           case WHILE:
+          case XOR:
             break;
           default:
             goto SYMBOL;
@@ -522,35 +554,77 @@ int main (int argc, char** argv) {
       }
       goto START;
     
-    case '&': oper = And; prec = 5; if (GET == '=') { goto ASSIGNMENT; } goto OPERATOR;
-    case '~': oper = Xor; prec = 6; if (GET == '=') { goto ASSIGNMENT; } goto OPERATOR;
-    case '|': oper = Or;  prec = 7; if (GET == '=') { goto ASSIGNMENT; } goto OPERATOR;
-    case '*': oper = Mul; prec = 8; if (GET == '=') { goto ASSIGNMENT; } goto OPERATOR;
-    case '/': oper = Div; prec = 8; if (GET == '=') { goto ASSIGNMENT; } goto OPERATOR;
-    case '%': oper = Rem; prec = 8; if (GET == '=') { goto ASSIGNMENT; } goto OPERATOR;
+    case '&': GET;
+      if (ch == '=') { last->add(new ExprAndSet); goto START; } else
+                     { last->add(new ExprAnd);    goto CHECK; }
     
-    case '?': oper = Qst; if ((ch = fgetc(input)) == '=') { goto ASSIGNMENT; } goto OPERATOR;
+    case '~': GET;
+      if (ch == '=') { last->add(new ExprXorSet); goto START; } else
+                     { last->add(new ExprXor);    goto CHECK; }
+    
+    case '|': GET;
+      if (ch == '=') { last->add(new ExprOrSet);  goto START; } else
+                     { last->add(new ExprOr);     goto CHECK; }
+
+    case '*': GET;
+      if (ch == '=') { last->add(new ExprMulSet); goto START; } else
+                     { last->add(new ExprMul);    goto CHECK; }
+
+    case '/': GET;
+      if (ch == '=') { last->add(new ExprDivSet); goto START; } else
+                     { last->add(new ExprDiv);    goto CHECK; }
+
+    case '%': GET;
+      if (ch == '=') { last->add(new ExprRemSet); goto START; } else
+                     { last->add(new ExprRem);    goto CHECK; }
      
     case '+': GET;
-      if (ch == '+') { last->add(new ExprInc); goto START; } else
+      if (ch == '+') { last->add(new ExprInc);    goto START; } else
       if (ch == '=') { last->add(new ExprAddSet); goto START; } else
-                     { last->add(new ExprAdd); goto CHECK; }
+                     { last->add(new ExprAdd);    goto CHECK; }
     
-    case '-':
-      if (GET == '-') { oper = Dec; goto OPERATOR; }
-      if (ch == '>') { oper = Arr; prec = 7; goto OPERATOR; }
-      oper = Sub; prec = 9;
-      if (ch == '=') { goto ASSIGNMENT; } goto OPERATOR;
+    case '-': GET;
+      if (ch == '-') { last->add(new ExprDec);    goto START; } else
+      if (ch == '>') { last->add(new ExprArr);    goto START; } else
+      if (ch == '=') { last->add(new ExprSubSet); goto START; } else
+                     { last->add(new ExprSub);    goto CHECK; }
     
-    case '=':
-      if (GET == '=') { oper = Eq; prec = 12; goto OPERATOR; }
-      oper = Set; goto ASSIGNMENT;
+    case '=': GET;
+      if (ch == '=') { last->add(new ExprEq);     goto START; } else
+                     { last->add(new ExprSet);    goto CHECK; }
     
-    case '<': oper = (GET == '=') ? LssEq : Lss; prec = 11; goto OPERATOR;    
-    case '>': oper = (GET == '=') ? GrtEq : Grt; prec = 11; goto OPERATOR;    
-    case '!': oper = Not; if (GET == '=') { oper = NotEq; prec = 12; } goto OPERATOR;
-    
-    case '^': oper = Addr; goto OPERATOR;     
+    case '<': GET;
+      if (ch == '<') { GET;
+        if (ch == '=') { last->add(new ExprShlSet); goto START; } else
+                       { last->add(new ExprShl);    goto CHECK; } } else
+      if (ch == '=') { last->add(new ExprLe);     goto START; } else
+      if (ch == '>') { last->add(new ExprNe);     goto START; } else
+                     { last->add(new ExprLt);     goto CHECK; }
+       
+    case '>': GET;
+      if (ch == '>') { GET;
+        if (ch == '=') { last->add(new ExprShrSet); goto START; } else
+                       { last->add(new ExprShr);    goto CHECK; } } else
+      if (ch == '=') { last->add(new ExprGe);     goto START; } else
+                     { last->add(new ExprGt);     goto CHECK; }
+    case '.': GET;
+      if (ch == '.') { GET;
+        if (ch == '.') { last->add(new ExprRg);     goto START; } else
+                       { last->add(new ExprXrg);    goto CHECK; } } else
+                     { last->add(new ExprDot);    goto CHECK; }
+    case ':': GET;
+      if (ch == '=') { last->add(new ExprDef);    goto START; } else
+                     { last->add(new ExprCol);    goto CHECK; }
+
+    case '?':
+      last->add(new ExprQst); goto START;
+
+    case '!':
+      last->add(new ExprBng); goto START;
+
+    case '^':
+      last->add(new ExprPtr); goto START;  
+         
     case ';': goto START;
     
     case '(':
@@ -561,9 +635,5 @@ int main (int argc, char** argv) {
     default:
       return 1;
   }
-
-  ASSIGNMENT:  
-  OPERATOR:
-    goto START;
 }
 
